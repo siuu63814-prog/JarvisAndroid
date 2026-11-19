@@ -1,0 +1,130 @@
+package com.workharddie.jarvis
+
+import android.animation.ValueAnimator
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RadialGradient
+import android.graphics.RectF
+import android.graphics.Shader
+import android.util.AttributeSet
+import android.view.View
+import android.view.animation.LinearInterpolator
+import kotlin.math.min
+import kotlin.math.sin
+
+class JarvisView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null
+) : View(context, attrs) {
+
+    enum class State { IDLE, LISTENING, SPEAKING }
+    var state = State.IDLE
+
+    private var target = 0f   // raw mic level 0..1
+    private var level = 0f    // smoothed level
+    private var angle = 0f
+    private var animator: ValueAnimator? = null
+    private val density = resources.displayMetrics.density
+
+    private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val core = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val box = RectF()
+
+    // {width multiplier, alpha} — three passes fake a glow without costly blur
+    private val glow = arrayOf(
+        floatArrayOf(7f, 24f),
+        floatArrayOf(3.5f, 70f),
+        floatArrayOf(1f, 255f)
+    )
+
+    fun setLevel(v: Float) { target = v }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        animator = ValueAnimator.ofFloat(0f, 360f).apply {
+            duration = 14000
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = LinearInterpolator()
+            addUpdateListener {
+                angle = it.animatedValue as Float
+                invalidate()
+            }
+            start()
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        animator?.cancel()
+        animator = null
+        super.onDetachedFromWindow()
+    }
+
+    // Stop animating (saves battery) when the app is not visible
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        if (visibility == VISIBLE) animator?.resume() else animator?.pause()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val cx = width / 2f
+        val cy = height / 2f
+        val base = min(width, height) / 2f * 0.94f
+
+        val color = when (state) {
+            State.IDLE -> 0xFF1E90FF.toInt()
+            State.LISTENING -> 0xFF38E8FF.toInt()
+            State.SPEAKING -> 0xFF7AB8FF.toInt()
+        }
+
+        val goal = when (state) {
+            State.LISTENING -> target
+            State.SPEAKING -> 0.45f + 0.3f * sin(Math.toRadians(angle * 30.0)).toFloat()
+            State.IDLE -> 0f
+        }
+        level += (goal - level) * 0.15f
+
+        val coreR = base * (0.40f + 0.14f * level)
+        core.shader = RadialGradient(
+            cx, cy, coreR,
+            intArrayOf(withAlpha(color, 210), withAlpha(color, 70), withAlpha(color, 0)),
+            floatArrayOf(0f, 0.6f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        canvas.drawCircle(cx, cy, coreR, core)
+
+        circle(canvas, cx, cy, base * 0.52f * (1f + 0.05f * level), color, 2.5f, 1f)
+        arcs(canvas, cx, cy, base * 0.66f, color, angle, 3, 70f, 3.5f)
+        arcs(canvas, cx, cy, base * 0.80f, color, -angle * 1.6f, 6, 28f, 3f)
+        circle(canvas, cx, cy, base * 0.94f * (1f + 0.025f * level), color, 1.5f, 0.5f)
+    }
+
+    private fun withAlpha(color: Int, a: Int) = (color and 0x00FFFFFF) or (a shl 24)
+
+    private fun circle(c: Canvas, cx: Float, cy: Float, r: Float, color: Int, w: Float, k: Float) {
+        for (g in glow) {
+            ring.color = color
+            ring.alpha = (g[1] * k).toInt()
+            ring.strokeWidth = w * g[0] * density
+            c.drawCircle(cx, cy, r, ring)
+        }
+    }
+
+    private fun arcs(
+        c: Canvas, cx: Float, cy: Float, r: Float, color: Int,
+        start: Float, count: Int, sweep: Float, w: Float
+    ) {
+        box.set(cx - r, cy - r, cx + r, cy + r)
+        for (g in glow) {
+            ring.color = color
+            ring.alpha = g[1].toInt()
+            ring.strokeWidth = w * g[0] * density
+            for (i in 0 until count) {
+                c.drawArc(box, start + i * 360f / count, sweep, false, ring)
+            }
+        }
+    }
+}
